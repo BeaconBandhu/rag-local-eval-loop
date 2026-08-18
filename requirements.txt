@@ -1,0 +1,20 @@
+# This suite imports and runs the target RAG project's real code in-process
+# (see eval/target.py), so it needs that project's exact dependencies --
+# there's no separate, smaller dependency set for "just the eval logic".
+#
+# Recommended: don't create a new venv for this repo at all. Run with the
+# target project's own virtualenv Python, e.g. on Windows:
+#   RAG\.venv\Scripts\python.exe -m eval.runner
+# It already has everything below (plus torch+transformers if
+# GENERATION_BACKEND="local" -- see the target project's own
+# requirements.txt / requirements-training.txt for that GPU-specific pin).
+#
+# This file exists for reference / for anyone who wants a standalone venv
+# instead. Versions match what this suite was built and tested against.
+faiss-cpu==1.9.0
+sentence-transformers==3.3.1
+numpy==1.26.4
+pyarrow>=14.0.0
+huggingface_hub==0.36.2
+openai==3.1.0
+python-dotenv==1.2.2
