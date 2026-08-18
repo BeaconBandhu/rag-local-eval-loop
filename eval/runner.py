@@ -67,9 +67,13 @@ def main():
 
     root = target.load_target(args.rag_root)
     print(f"Target project: {root}")
-    from app.config import GENERATION_BACKEND, LOCAL_GENERATION_MODEL, GENERATION_MODEL
-
-    model_hint = LOCAL_GENERATION_MODEL if GENERATION_BACKEND == "local" else GENERATION_MODEL
+    # All OPTIONAL per eval/target.py's interface contract -- purely cosmetic
+    # labels for the report meta, so a missing one just prints "unknown"
+    # rather than crashing a target that doesn't declare these config names.
+    generation_backend = target.optional_config("GENERATION_BACKEND", default="unknown")
+    local_model = target.optional_config("LOCAL_GENERATION_MODEL", default="unknown")
+    hosted_model = target.optional_config("GENERATION_MODEL", default="unknown")
+    model_hint = local_model if generation_backend == "local" else hosted_model
 
     print(f"Loading {args.num_answerable} answerable + {args.num_unanswerable} unanswerable examples from MSMARCO-XI...")
     examples = dataset.load_examples(
@@ -110,7 +114,7 @@ def main():
     full_report = {
         "meta": {
             "target_root": str(root),
-            "generation_backend": GENERATION_BACKEND,
+            "generation_backend": generation_backend,
             "generation_model_hint": model_hint,
             "language": args.language,
             "split": args.split,

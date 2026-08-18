@@ -104,12 +104,19 @@ class JudgeVerdict:
 
 
 def _resolve_provider() -> str:
-    # Explicitly importing app.config (not just target.load_target(), which only
-    # touches sys.path) guarantees the target's .env has actually been loaded via
-    # python-dotenv before the env var checks below -- relying on some other
-    # module having imported it first is fragile to call order.
+    # Best-effort: if the target has an app.config that loads a .env (this
+    # suite's original target project does, via python-dotenv), importing
+    # it here guarantees that's happened before the env var checks below --
+    # relying on some other module having imported it first is fragile to
+    # call order. Not every target does this, or even has an app.config at
+    # all (it's OPTIONAL per eval/target.py's interface contract), so this
+    # is silently skipped rather than required -- either way, the actual
+    # judge credential can just be set in the shell environment directly.
     target.load_target()
-    import app.config  # noqa: F401 -- imported for its load_dotenv() side effect
+    try:
+        import app.config  # noqa: F401 -- imported for its load_dotenv() side effect, if any
+    except ImportError:
+        pass
 
     forced = os.environ.get("EVAL_JUDGE_PROVIDER", "auto").lower()
     if forced not in ("openai", "anthropic", "auto"):

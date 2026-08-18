@@ -1,15 +1,21 @@
 # rag-local-eval-loop
 
-An evaluation loop for a local RAG system (FAISS + Sentence-Transformers
-retrieval, OpenAI/local-GPU generation) — retrieval quality, hallucination
-rate, answer correctness, and a "lying factor" reliability check, all
-sampled straight from the [ai4bharat/MSMARCO-XI](https://huggingface.co/datasets/ai4bharat/MSMARCO-XI)
+An evaluation loop for **your own RAG system** — retrieval quality,
+hallucination rate, answer correctness, and a "lying factor" reliability
+check, all sampled straight from the [ai4bharat/MSMARCO-XI](https://huggingface.co/datasets/ai4bharat/MSMARCO-XI)
 dataset. No hand-written eval queries anywhere in this repo.
 
-This repo is deliberately separate from the RAG project it evaluates —
-see [Setup](#setup) for how the two connect. It tests the *real* target
-system in-process (real embedding model, real retriever, real generation
-backend), not a reimplementation of its logic.
+The dataset is the one fixed constant across everyone who runs this
+suite; the RAG system under test is not — this repo doesn't ship a RAG
+system of its own, and it isn't tied to any one project's specific stack.
+It needs exactly two things from your project: an `embed()`/`embed_one()`
+function and a `generate_answer()` function (see
+[TARGET_INTERFACE.md](TARGET_INTERFACE.md) for the full, minimal contract,
+and [`examples/minimal_target/`](examples/minimal_target/) for a real,
+tested, working example with no vector database and no LLM API key at
+all). It tests the *real* target system in-process — the real embedding
+model, the real generation backend, whatever those are for you — not a
+reimplementation of its logic.
 
 ## Methodology
 
@@ -63,19 +69,25 @@ This suite uses **both** buckets on purpose:
   decline. If it answers anyway, that's a fabrication — see "lying
   factor" below.
 
-`eval/dataset.py` samples a fixed-seed (`--seed`, default 42) N of each
-bucket. `eval/index_build.py` then builds a **throwaway, in-memory FAISS
-index** from just the sampled examples' candidate passages (mirrors the
-target project's own `benchmark/ragbench.py` pattern) — this suite never
-touches the target's live `index/` directory.
+`eval/dataset.py` (backed by `eval/msmarco.py`, this suite's own parquet
+loader — not borrowed from the target) samples a fixed-seed (`--seed`,
+default 42) N of each bucket. `eval/index_build.py` then builds a
+**throwaway, in-memory FAISS index** from just the sampled examples'
+candidate passages, using this suite's own chunking and HNSW parameters
+(not the target's) — this suite never touches your project's actual
+production index, and doesn't require you to be using FAISS at all in
+your own retrieval path; only `embed()`/`embed_one()` are real calls into
+your project.
 
 The index is **mixed-language on purpose**: every candidate passage goes
 in in both English and the Indic language, tagged by language. Retrieval
 is graded two ways — "cross-lingual" (either language counts as a hit)
-and "same-language only" — because the target project's embedding model
-was specifically fine-tuned for Hindi+English cross-lingual retrieval on
-this exact dataset, and cross-lingual recall is the metric that actually
-reflects what that fine-tune was for.
+and "same-language only". This suite's original target project's
+embedding model was specifically fine-tuned for Hindi+English cross-lingual
+retrieval on this exact dataset, which is why cross-lingual recall is the
+headline metric here — for a target that only handles one language, expect
+the two variants to read identically (same-language recall is what
+matters for you; cross-lingual just won't show any extra benefit).
 
 Generation and the LLM-judge checks are **English-only**: the ground-truth
 answers and the judge prompts are English, so English is the language
@@ -108,10 +120,9 @@ Five independent checks, each in `eval/checks/`:
      is relevant), but the system answered anyway. A fabrication with no
      basis in the retrieved evidence — the sharper failure of the two.
 5. **`latency.py`** — embed/search/generation timing percentiles, against
-   the target project's real `LATENCY_BUDGET_MS` (retrieval) and this
-   suite's own explicitly-labeled `GENERATION_LATENCY_TARGET_MS`
-   (generation isn't covered by any budget in the target project by
-   design — see its own `app/generator.py` docstring).
+   the target's `LATENCY_BUDGET_MS` if it declares one (optional — falls
+   back to this suite's own default, `50ms`, otherwise) and this suite's
+   own explicitly-labeled `GENERATION_LATENCY_TARGET_MS`.
 
 ## Architecture
 
@@ -145,23 +156,26 @@ running them concurrently doesn't buy real speed, they're dispatched
 through the same pool for architectural consistency, not because they're
 a bottleneck.
 
-Phase A's parallelism depends on the target's `GENERATION_BACKEND`
-(`app/config.py` in the target project):
-- `"openai"` — real speedup, same reasoning as the judge calls above.
-- `"local"` — **no speedup, and `eval/pipeline.py` auto-clamps to 1
-  worker.** That backend holds one model on one GPU; concurrent threads
-  calling `.generate()` on it would contend for the same CUDA device with
-  no throughput gain and a real risk of GPU memory pressure from multiple
-  simultaneous KV caches. This isn't configurable away — it's a
-  correctness choice, not a preference.
+Phase A's parallelism depends on your generation path. If it's a hosted
+API call, concurrent workers are a real speedup (same reasoning as the
+judge calls above). If it holds one model on one local GPU, concurrent
+threads calling into it would contend for the same CUDA device with no
+throughput gain and a real risk of GPU memory pressure from multiple
+simultaneous KV caches — pass `--workers 1` for that case. If your
+project declares `app.config.GENERATION_BACKEND = "local"` (this suite's
+original target project's own convention — entirely optional, see
+[TARGET_INTERFACE.md](TARGET_INTERFACE.md)), `eval/pipeline.py` detects it
+and clamps to 1 worker automatically; otherwise it's on you to pass
+`--workers 1` yourself if that applies to your setup.
 
 ## Setup
 
-This suite needs the target RAG project's exact runtime (it imports and
-executes that project's `app.*` and `training.*` modules in-process — same
-embedding model, same FAISS version, same generation backend). **Run it
-with the target project's own virtualenv Python** rather than creating a
-new one.
+This suite needs your target project's exact runtime (it imports and
+executes your `app.embedder` / `app.generator` in-process — same
+embedding model, same generation backend, same dependencies those two
+files need). **Run it with the target project's own virtualenv Python**
+rather than creating a new one. See [TARGET_INTERFACE.md](TARGET_INTERFACE.md)
+for exactly what your project needs to provide.
 
 ### One-command launcher (recommended)
 
@@ -183,9 +197,10 @@ forward every argument to `eval.runner`:
 Both resolve the target project root the same way `eval/target.py` does:
 `--rag-root` flag → `RAG_PROJECT_ROOT` env var → a sibling `../RAG`
 directory next to wherever this repo was cloned. If none of those resolve
-to a real checkout (missing `app/config.py`) or that project has no
-`.venv`, the script says exactly what's missing instead of failing deep
-inside a Python traceback.
+to a real, compatible project (missing `app/embedder.py` or
+`app/generator.py` — see [TARGET_INTERFACE.md](TARGET_INTERFACE.md)) or
+that project has no `.venv`, the script says exactly what's missing
+instead of failing deep inside a Python traceback.
 
 ### Manual invocation
 
@@ -200,11 +215,10 @@ $env:RAG_PROJECT_ROOT="D:\path\to\RAG"; D:\path\to\RAG\.venv\Scripts\python.exe 
 ### Judge credentials
 
 The judge (`eval/judge.py`) auto-detects whichever real credential is
-actually present — it doesn't assume OpenAI. Whatever the target
-project's own generation backend needs (`OPENAI_API_KEY` for its
-`"openai"` backend, nothing for `"local"`) is separate from what the
-*judge* needs, and the judge always needs one of its own regardless of
-which generation backend is under test:
+actually present — it doesn't assume OpenAI. Whatever credential (if any)
+your own `app.generator.generate_answer()` needs internally is entirely
+separate from what the *judge* needs — the judge always needs one of its
+own, regardless of what your project's generation path does:
 
 | Env var | Effect |
 |---|---|
@@ -234,7 +248,9 @@ python -m eval.runner
   --num-unanswerable N   unanswerable rows to sample (default: 25)
   --top-k K              results retrieved per query (default: 5)
   --workers N             parallel workers for retrieval+generation (default: 6;
-                           auto-clamped to 1 if the target's GENERATION_BACKEND is "local")
+                           auto-clamped to 1 if the target declares
+                           app.config.GENERATION_BACKEND == "local" -- optional,
+                           set --workers 1 yourself if that applies but isn't declared)
   --judge-workers N       parallel workers per judge check (default: 8)
   --seed N                sampling seed (default: 42)
   --language CODE         MSMARCO-XI language code (default: hin)
@@ -302,6 +318,13 @@ real, non-trivial gaps. That contrast is the report doing its job: it's
 telling you retrieval isn't the bottleneck here, generation reliability
 is — a conclusion a single blended "accuracy" number would have hidden.)
 
+This suite has also been run, for real, against a *different* project
+with zero shared code — [`examples/minimal_target/`](examples/minimal_target/),
+a two-file fake embedder + generator with no config file and no LLM key
+at all — specifically to verify the target interface decoupling actually
+works and not just that it was designed to. See that example's own
+README for the real output from that run.
+
 ## This suite already found a real bug
 
 On its first real run against the target project, this suite's own
@@ -331,10 +354,11 @@ against an ideal of `1.000`; hallucination/false-refusal/false-confidence
 rates compare against an ideal of `0.000`. `PERFECT` means the gap rounded
 to zero at this sample size — not a guarantee it stays that way at scale.
 The one place a real threshold exists is latency: retrieval is checked
-against the target project's actual declared budget
-(`LATENCY_BUDGET_MS`), and generation against this suite's own explicitly
-labeled target (`GENERATION_LATENCY_TARGET_MS`, override via
-`EVAL_GENERATION_LATENCY_TARGET_MS`) — those two get PASS/FAIL because
+against the target's declared budget if it has one (`LATENCY_BUDGET_MS`,
+optional — falls back to `50ms`, override via
+`EVAL_RETRIEVAL_LATENCY_BUDGET_MS`), and generation against this suite's
+own explicitly labeled target (`GENERATION_LATENCY_TARGET_MS`, override
+via `EVAL_GENERATION_LATENCY_TARGET_MS`) — those two get PASS/FAIL because
 they're the only two with a stated bar to check against.
 
 `results/<timestamp>.json` (gitignored) holds the full report, including
@@ -354,14 +378,27 @@ more flagged examples than the terminal shows (5 per check, vs. 3 printed).
   see faithfulness/correctness rates shift a few points between runs. The
   dataset sample itself is fully reproducible (fixed-seed); the judge's
   reading of it is not.
-- **The local-backend worker clamp is a hard floor, not a suggestion** —
-  see [Architecture](#architecture). Don't route around it by editing
-  `eval/pipeline.py`'s clamp; it exists because of an actual GPU
-  contention/correctness concern, not a conservative default.
-- **This suite grades whatever `GENERATION_BACKEND` the target project is
-  currently configured with** — it doesn't run both backends and compare
-  them in one invocation. Re-run after flipping the target's config to
-  compare.
+- **The local-GPU worker clamp only fires automatically if your project
+  declares `app.config.GENERATION_BACKEND == "local"`** — that's this
+  suite's original target project's own convention, not a general
+  standard (see [TARGET_INTERFACE.md](TARGET_INTERFACE.md)). If your
+  generation path holds one model on one GPU under a different config
+  name or no config at all, the clamp won't see it — pass `--workers 1`
+  yourself. When it does apply, don't route around it by editing
+  `eval/pipeline.py`; it's a GPU contention/correctness concern, not a
+  conservative default.
+- **This suite grades whatever your project's `generate_answer()`
+  currently does** — it doesn't run multiple configurations and compare
+  them in one invocation. Re-run after changing your own project's
+  generation setup to compare.
+- **The isolated eval index doesn't match your project's real retrieval
+  setup** — chunking, HNSW parameters, and even the choice of FAISS itself
+  are this suite's own (see [Where the data comes from](#where-the-data-comes-from)).
+  Only `embed()`/`embed_one()` are real calls into your project; if your
+  production retrieval differs meaningfully from a plain HNSW index over
+  your raw embeddings (e.g. reranking, hybrid search, metadata filtering),
+  this suite's retrieval numbers reflect your embedding model's quality,
+  not your full retrieval pipeline's.
 
 ## License
 

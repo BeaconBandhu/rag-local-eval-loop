@@ -12,17 +12,19 @@ actually grade correctly -- see README.md's "Scope" section for why Hindi
 generation grading isn't included.
 
 Parallelism: examples are processed concurrently via a thread pool. This
-is a real speedup when GENERATION_BACKEND="openai" -- each example's
-generation call is a blocking network request, and network waits release
-the GIL, so multiple in-flight requests genuinely overlap. It is NOT a
-real speedup when GENERATION_BACKEND="local": that backend holds one model
-on one GPU (see the target project's app/local_generator.py), and
-concurrent threads calling .generate() on it would contend for the same
-CUDA device with no throughput gain and a real risk of GPU memory pressure
-from multiple simultaneous KV caches. This module checks the target's
-actual GENERATION_BACKEND and clamps to 1 worker automatically in that
-case -- not configurable away, since it's a correctness/safety choice, not
-a preference.
+is a real speedup for any target whose generation call is a blocking
+network request (network waits release the GIL, so multiple in-flight
+requests genuinely overlap). It is NOT a real speedup -- and is actively
+risky -- for a target holding one model on one local GPU: concurrent
+threads calling into it would contend for the same CUDA device with no
+throughput gain and a real risk of GPU memory pressure from multiple
+simultaneous KV caches. This module reads the target's OPTIONAL
+app.config.GENERATION_BACKEND (see eval/target.py's interface contract)
+and clamps to 1 worker automatically when it's exactly "local" -- that
+specific value is this suite's original target project's own convention,
+not a general standard, so if your target uses local-GPU generation under
+a different config name or value, the auto-clamp won't see it -- pass
+--workers 1 yourself in that case.
 """
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -38,6 +40,18 @@ class RetrievedHit:
     query_id: int
     lang: str
     is_selected: bool
+    score: float
+
+
+@dataclass
+class _Context:
+    """Duck-typed context object handed to the target's generate_answer()
+    -- deliberately NOT the target's own SearchResult class (see
+    eval/target.py's interface contract: only `.text` / `.source` need to
+    exist, under whatever attribute-access pattern the target's own
+    generator uses)."""
+    text: str
+    source: str
     score: float
 
 
@@ -75,7 +89,6 @@ def _search(query: str, index, records: list[ChunkRecord], top_k: int, embed_one
 def _process_one(ex: EvalExample, index, records: list[ChunkRecord], top_k: int) -> ExampleResult:
     from app.embedder import embed_one
     from app.generator import generate_answer
-    from app.retriever import SearchResult
 
     result = ExampleResult(example=ex)
     try:
@@ -87,7 +100,7 @@ def _process_one(ex: EvalExample, index, records: list[ChunkRecord], top_k: int)
         result.embed_ms_hi, result.search_ms_hi = embed_ms_hi, search_ms_hi
 
         search_results = [
-            SearchResult(text=rec.text, source=f"msmarco-xi/q{rec.query_id}/{rec.lang}", score=hit.score)
+            _Context(text=rec.text, source=f"msmarco-xi/q{rec.query_id}/{rec.lang}", score=hit.score)
             for rec, hit in zip(chunk_records_en, hits_en)
         ]
         result.context_text_en = "\n\n".join(sr.text for sr in search_results)
@@ -103,14 +116,18 @@ def _process_one(ex: EvalExample, index, records: list[ChunkRecord], top_k: int)
 
 
 def run(examples: list[EvalExample], index, records: list[ChunkRecord], top_k: int, workers: int) -> list[ExampleResult]:
-    target.load_target()
-    from app.config import GENERATION_BACKEND
-
-    effective_workers = 1 if GENERATION_BACKEND == "local" else max(1, workers)
+    generation_backend = target.optional_config("GENERATION_BACKEND", default=None)
+    effective_workers = 1 if generation_backend == "local" else max(1, workers)
     if effective_workers != workers:
         print(
             f"[pipeline] GENERATION_BACKEND=\"local\" -- clamping workers {workers} -> 1 "
             f"(single shared GPU model, see this module's docstring)."
+        )
+    elif generation_backend is None and workers > 1:
+        print(
+            f"[pipeline] target doesn't declare app.config.GENERATION_BACKEND -- running "
+            f"{workers} workers as requested. If your target holds one shared model on one "
+            f"local GPU, pass --workers 1 yourself (see this module's docstring)."
         )
 
     results: list[ExampleResult] = [None] * len(examples)  # type: ignore[list-item]

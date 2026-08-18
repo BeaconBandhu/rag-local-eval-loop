@@ -1,7 +1,9 @@
 """Builds the eval query set straight from ai4bharat/MSMARCO-XI -- no
-hand-written queries anywhere in this suite. Reuses the target project's
-own verified parquet loader (training/data.py: download_split, iter_rows)
-rather than re-implementing parquet reading here.
+hand-written queries anywhere in this suite. Loads it via eval/msmarco.py,
+this suite's own parquet loader -- the dataset is the fixed constant
+across everyone who runs this suite; it does NOT come from the target
+project (see eval/msmarco.py's docstring for why that's a deliberate
+design change, not an implementation detail).
 
 Two buckets, both real and both useful, discovered by direct inspection of
 the dataset (not assumed):
@@ -27,7 +29,7 @@ answer these, not fabricate a confident answer from irrelevant candidates.
 import random
 from dataclasses import dataclass, field
 
-from eval import target
+from eval.msmarco import download_split, iter_rows
 
 
 @dataclass
@@ -104,10 +106,8 @@ def load_examples(
     """Downloads (or reuses the HF cache for) one MSMARCO-XI language split,
     scans up to `scan_limit` rows (scanning the whole 97,941-row validation
     file is unnecessary for a sample of a few dozen-hundred), buckets them,
-    and returns a fixed-seed random sample of each bucket, concatenated."""
-    target.load_target()
-    from training.data import download_split, iter_rows  # target project's verified loader
-
+    and returns a fixed-seed random sample of each bucket, concatenated.
+    Doesn't touch the target project at all -- see this module's docstring."""
     path = download_split(language, split)
     answerable, unanswerable = [], []
     for row in iter_rows(path, limit=scan_limit):
