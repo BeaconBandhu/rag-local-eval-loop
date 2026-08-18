@@ -65,8 +65,14 @@ def main():
     parser.add_argument("--rag-root", default=None, help="path to the target RAG project (default: RAG_PROJECT_ROOT env var, then ../RAG)")
     args = parser.parse_args()
 
-    root = target.load_target(args.rag_root)
+    # verify_target(), not load_target() -- actually imports the target's
+    # embedder/generator modules and checks the required functions exist
+    # on them, so an incompatible target fails right here with one clear
+    # message instead of partway through every example in Phase A, or
+    # (worse) after minutes spent downloading MSMARCO-XI first.
+    root = target.verify_target(args.rag_root)
     print(f"Target project: {root}")
+    print(f"Embedder: {target.EMBEDDER_MODULE}  |  Generator: {target.GENERATOR_MODULE}")
     # All OPTIONAL per eval/target.py's interface contract -- purely cosmetic
     # labels for the report meta, so a missing one just prints "unknown"
     # rather than crashing a target that doesn't declare these config names.
@@ -139,4 +145,13 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except target.TargetNotFound as e:
+        # A wrong/incompatible --rag-root or RAG_PROJECT_ROOT is a normal,
+        # expected user error, not a bug in this suite -- print just the
+        # message eval/target.py already built (which names the exact
+        # missing module/attribute and how to fix it) instead of a raw
+        # traceback that buries it.
+        print(f"\n{e}", file=sys.stderr)
+        sys.exit(1)

@@ -87,8 +87,8 @@ def _search(query: str, index, records: list[ChunkRecord], top_k: int, embed_one
 
 
 def _process_one(ex: EvalExample, index, records: list[ChunkRecord], top_k: int) -> ExampleResult:
-    from app.embedder import embed_one
-    from app.generator import generate_answer
+    embed_one = target.get_embedder().embed_one
+    generate_answer = target.get_generator().generate_answer
 
     result = ExampleResult(example=ex)
     try:

@@ -68,11 +68,12 @@ def _chunk_text(text: str, size: int, overlap: int) -> list[str]:
 
 
 def build_index(examples: list[EvalExample]):
+    import faiss
+
     from eval import target
 
-    target.load_target()
-    import faiss
-    from app.embedder import embed, embed_one, get_model
+    embedder = target.get_embedder()
+    embed, embed_one, get_model = embedder.embed, embedder.embed_one, embedder.get_model
 
     texts: list[str] = []
     records: list[ChunkRecord] = []

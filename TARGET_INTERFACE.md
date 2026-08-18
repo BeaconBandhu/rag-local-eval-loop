@@ -12,9 +12,26 @@ with the least possible code is in [`examples/minimal_target/`](examples/minimal
 
 ## Required
 
-Your project's root needs two files:
+Two Python modules, importable once your project's root is on `sys.path`
+(which this suite arranges — nothing to configure for that part). By
+default that means `app/embedder.py` and `app/generator.py`, but **this
+suite verifies by importing the real module and checking real function
+names on it — never by checking for an expected file path** (a filename
+check is a proxy that breaks the moment your project is laid out
+differently, and this suite shipped exactly that bug once already before
+switching to real import-based verification). If your project doesn't
+use an `app/` package — a flat `main.py` at the root, for instance — point
+at it instead:
 
-### `app/embedder.py`
+```bash
+export EVAL_EMBEDDER_MODULE=main      # default: app.embedder
+export EVAL_GENERATOR_MODULE=main     # default: app.generator
+```
+
+(Same module name twice is fine if both functions live in one file — see
+below for a real, tested `main.py`-only example.)
+
+### Embedder module (default `app.embedder`)
 
 ```python
 def embed(texts: list[str]) -> "array-like, shape (len(texts), dim)": ...
@@ -27,7 +44,7 @@ def get_model(): ...  # called once; only its side effect (loading the model) ma
 inferred empirically from a real call to `embed_one` — there's no
 `EMBEDDING_DIM` config value to declare anywhere.
 
-### `app/generator.py`
+### Generator module (default `app.generator`)
 
 ```python
 def generate_answer(query: str, results: list) -> "answer object": ...
@@ -86,9 +103,21 @@ latency checks don't need a judge credential at all.
 RAG_PROJECT_ROOT=/path/to/your-project python -m eval.runner --num-answerable 3 --num-unanswerable 3 --workers 1
 ```
 
-A small, fast, cheap run. If `app/embedder.py` and `app/generator.py` are
-wired correctly, you'll get a real report (even a bad one — a low Recall
-number from a genuinely weak embedder is a correct result, not a bug).
-If something's missing, `eval/target.py` says exactly which file wasn't
-found, and each check reports `SKIPPED` with a plain-English reason
-(missing judge credential, etc.) rather than a stack trace.
+A small, fast, cheap run. If your embedder/generator modules are wired
+correctly, you'll get a real report (even a bad one — a low Recall number
+from a genuinely weak embedder is a correct result, not a bug). If
+something's missing, `eval.target.verify_target()` runs *before* anything
+else (before even downloading the dataset) and fails with the exact
+missing module or function name — never a bare stack trace — and each
+check that needs a judge reports `SKIPPED` with a plain-English reason
+(e.g. missing credential) rather than crashing the whole run.
+
+This has been tested for real against three different layouts, not just
+designed to work in theory: this suite's original `app/`-package target
+project, [`examples/minimal_target/`](examples/minimal_target/) (same
+layout, zero real logic), and a flat single-file `main.py` with
+`EVAL_EMBEDDER_MODULE=main EVAL_GENERATOR_MODULE=main` and no `app/`
+package at all. All three produced real, correctly-varying reports (a
+random-embedding target scored `Recall@1: 0.000`; a real fine-tuned model
+scored meaningfully higher) rather than the same canned numbers regardless
+of what was actually under test.

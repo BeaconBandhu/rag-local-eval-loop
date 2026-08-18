@@ -7,13 +7,18 @@ dataset. No hand-written eval queries anywhere in this repo.
 
 The dataset is the one fixed constant across everyone who runs this
 suite; the RAG system under test is not — this repo doesn't ship a RAG
-system of its own, and it isn't tied to any one project's specific stack.
-It needs exactly two things from your project: an `embed()`/`embed_one()`
-function and a `generate_answer()` function (see
+system of its own, and it isn't tied to any one project's specific stack
+or file layout. It needs exactly two things from your project: an
+`embed()`/`embed_one()` function and a `generate_answer()` function,
+verified by actually **importing your real modules and checking real
+function names on them** — not by checking for an expected file path, so
+a flat `main.py` with no `app/` package at all works just as well as an
+`app/embedder.py` + `app/generator.py` layout (point at it with
+`EVAL_EMBEDDER_MODULE`/`EVAL_GENERATOR_MODULE`). See
 [TARGET_INTERFACE.md](TARGET_INTERFACE.md) for the full, minimal contract,
 and [`examples/minimal_target/`](examples/minimal_target/) for a real,
 tested, working example with no vector database and no LLM API key at
-all). It tests the *real* target system in-process — the real embedding
+all. It tests the *real* target system in-process — the real embedding
 model, the real generation backend, whatever those are for you — not a
 reimplementation of its logic.
 
@@ -196,11 +201,14 @@ forward every argument to `eval.runner`:
 
 Both resolve the target project root the same way `eval/target.py` does:
 `--rag-root` flag → `RAG_PROJECT_ROOT` env var → a sibling `../RAG`
-directory next to wherever this repo was cloned. If none of those resolve
-to a real, compatible project (missing `app/embedder.py` or
-`app/generator.py` — see [TARGET_INTERFACE.md](TARGET_INTERFACE.md)) or
-that project has no `.venv`, the script says exactly what's missing
-instead of failing deep inside a Python traceback.
+directory next to wherever this repo was cloned. The scripts only check
+that the *directory* and a `.venv` exist — they deliberately don't check
+for any particular file inside it (see
+[TARGET_INTERFACE.md](TARGET_INTERFACE.md) for why). The real check —
+actually importing your embedder/generator modules and verifying the
+required functions exist — happens once Python starts, and fails with the
+exact missing module or function name if something's wrong, before this
+suite wastes any time downloading the dataset.
 
 ### Manual invocation
 
