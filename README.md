@@ -176,38 +176,54 @@ and clamps to 1 worker automatically; otherwise it's on you to pass
 ## Setup
 
 This suite needs your target project's exact runtime (it imports and
-executes your `app.embedder` / `app.generator` in-process — same
-embedding model, same generation backend, same dependencies those two
-files need). **Run it with the target project's own virtualenv Python**
-rather than creating a new one. See [TARGET_INTERFACE.md](TARGET_INTERFACE.md)
-for exactly what your project needs to provide.
+executes your embedder/generator modules in-process — same embedding
+model, same generation backend, same dependencies those files need).
+**Run it with the target project's own virtualenv Python** rather than
+creating a new one. See [TARGET_INTERFACE.md](TARGET_INTERFACE.md) for
+exactly what your project needs to provide.
 
-### One-command launcher (recommended)
+### Option A: drop it into your project (simplest)
 
-`run.ps1` (Windows) / `run.sh` (macOS/Linux) find that venv for you and
-forward every argument to `eval.runner`:
+Copy the `eval/` folder and `run.sh`/`run.ps1` straight into your RAG
+project's own root, then just run the script from inside your project —
+no flags, no environment variables:
+
+```bash
+cp -r eval/ run.sh /path/to/your-project/
+cd /path/to/your-project
+./run.sh
+```
+
+It detects that `eval/` is sitting inside a real project (by actually
+importing your embedder/generator modules — not by checking for a
+particular filename, see [TARGET_INTERFACE.md](TARGET_INTERFACE.md)) and
+just runs. Add flags the same way: `./run.sh --num-answerable 50`.
+
+### Option B: keep it as a separate repo
+
+Clone this repo next to your project instead, and point at it:
 
 ```powershell
 .\run.ps1                                              # sibling ..\RAG, sensible defaults
 .\run.ps1 --num-answerable 50 --num-unanswerable 50
-.\run.ps1 --rag-root D:\path\to\RAG
+.\run.ps1 --rag-root D:\path\to\your-project
 ```
 
 ```bash
 ./run.sh
 ./run.sh --num-answerable 50 --num-unanswerable 50
-./run.sh --rag-root /path/to/RAG
+./run.sh --rag-root /path/to/your-project
 ```
 
-Both resolve the target project root the same way `eval/target.py` does:
-`--rag-root` flag → `RAG_PROJECT_ROOT` env var → a sibling `../RAG`
-directory next to wherever this repo was cloned. The scripts only check
-that the *directory* and a `.venv` exist — they deliberately don't check
-for any particular file inside it (see
-[TARGET_INTERFACE.md](TARGET_INTERFACE.md) for why). The real check —
-actually importing your embedder/generator modules and verifying the
-required functions exist — happens once Python starts, and fails with the
-exact missing module or function name if something's wrong, before this
+Both scripts use the same resolution order: `--rag-root` flag →
+`RAG_PROJECT_ROOT` env var → the script's own directory (Option A) → a
+sibling `../RAG` directory (Option B). They only check that a
+*directory* with a `.venv` exists — they deliberately don't check for any
+particular file inside it (see [TARGET_INTERFACE.md](TARGET_INTERFACE.md)
+for why). The real check — actually importing your embedder/generator
+modules and verifying the required functions exist — happens once Python
+starts, and fails with the exact missing module or function name if
+something's wrong, before this
 suite wastes any time downloading the dataset.
 
 ### Manual invocation
