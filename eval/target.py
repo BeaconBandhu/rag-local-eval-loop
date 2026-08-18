@@ -38,7 +38,7 @@ directly -- point at it with:
     EVAL_EMBEDDER_MODULE=main  EVAL_GENERATOR_MODULE=main
 (same module twice is fine if both live in one file). Whatever module
 name you give must be importable once the target root is on sys.path,
-which load_target() below arranges.
+which the resolution below arranges.
 
 OPTIONAL, with suite-owned fallbacks if absent -- see each module's own
 docstring for the exact fallback value and how to override it:
@@ -60,17 +60,24 @@ three items simply fall back to their defaults; nothing breaks.
 
 How the target ROOT DIRECTORY (not the module names within it) is
 located, in order:
-  1. --rag-root CLI flag (highest priority)
-  2. RAG_PROJECT_ROOT environment variable
-  3. A sibling directory named "RAG" next to this repo's own folder
-     (i.e. ../RAG relative to this file) -- true on the machine this suite
-     was built on, and a reasonable default for anyone who clones both
-     repos side by side, but not assumed to be true anywhere else.
-
-Run this suite using *the target project's own virtualenv*, not a fresh
-one -- it imports and executes that project's real code in-process, which
-means it needs that project's exact dependencies. See README.md's Setup
-section.
+  1. --rag-root CLI flag (highest priority) -- exactly this one path, no
+     fallback if it turns out incompatible (an explicit instruction that
+     fails should say so, not silently try something else).
+  2. RAG_PROJECT_ROOT environment variable -- same, exactly one path.
+  3. If neither is set, two candidates are tried in order, and the first
+     one that actually verifies (real import, real required functions)
+     wins:
+       a. This suite's own directory's parent -- i.e., wherever the
+          eval/ folder itself was placed. This is the common case now:
+          drop the eval/ folder (plus run.sh/run.ps1) directly into your
+          RAG project's root and just run the script from there, no env
+          var needed at all.
+       b. A sibling directory named "RAG" next to wherever this repo's
+          own folder lives (i.e. ../RAG) -- backward compatible with
+          running this suite as its own separate repo, cloned alongside
+          the target project.
+     If neither candidate verifies, the error lists both attempts and
+     what failed about each.
 """
 import importlib
 import os
@@ -80,6 +87,7 @@ from typing import Any
 
 _THIS_REPO_ROOT = Path(__file__).resolve().parent.parent
 _injected = False
+_resolved_root: Path | None = None
 
 EMBEDDER_MODULE = os.environ.get("EVAL_EMBEDDER_MODULE", "app.embedder")
 GENERATOR_MODULE = os.environ.get("EVAL_GENERATOR_MODULE", "app.generator")
@@ -92,63 +100,87 @@ class TargetNotFound(RuntimeError):
     pass
 
 
-def resolve_target_root(cli_arg: str | None = None) -> Path:
-    candidate = cli_arg or os.environ.get("RAG_PROJECT_ROOT") or str(_THIS_REPO_ROOT.parent / "RAG")
-    path = Path(candidate).resolve()
-    if not path.is_dir():
+def _candidate_roots(cli_arg: str | None) -> list[tuple[str, Path]]:
+    """Ordered (label, path) candidates. An explicit --rag-root or
+    RAG_PROJECT_ROOT means exactly one candidate -- no silent fallback
+    past an explicit instruction that turns out wrong."""
+    if cli_arg:
+        return [("--rag-root", Path(cli_arg).resolve())]
+    if os.environ.get("RAG_PROJECT_ROOT"):
+        return [("RAG_PROJECT_ROOT env var", Path(os.environ["RAG_PROJECT_ROOT"]).resolve())]
+    return [
+        ("this suite's own parent directory (eval/ dropped into your project)", _THIS_REPO_ROOT),
+        ("sibling ../RAG (separate-repo layout)", _THIS_REPO_ROOT.parent / "RAG"),
+    ]
+
+
+def _check_module(module_name: str, required_attrs: tuple[str, ...], env_var: str) -> None:
+    try:
+        mod = importlib.import_module(module_name)
+    except ImportError as e:
         raise TargetNotFound(
-            f"'{path}' is not a directory.\n"
-            f"Point at your project's root with --rag-root <path>, or set the RAG_PROJECT_ROOT "
-            f"environment variable, e.g.:\n"
-            f'  $env:RAG_PROJECT_ROOT = "C:\\path\\to\\your-project"   # PowerShell\n'
-            f"  export RAG_PROJECT_ROOT=/path/to/your-project          # bash"
-        )
-    return path
-
-
-def load_target(cli_arg: str | None = None) -> Path:
-    """Inserts the target project's root at the front of sys.path (once)
-    so its modules become importable. Returns the resolved path. Does NOT
-    verify the interface -- see verify_target() for that; kept separate
-    because some callers (e.g. eval/dataset.py used to, before it stopped
-    needing the target at all) only need the path resolved, not verified."""
-    global _injected
-    root = resolve_target_root(cli_arg)
-    if not _injected:
-        sys.path.insert(0, str(root))
-        _injected = True
-    return root
+            f"could not import '{module_name}': {e} (set {env_var} if your project uses a "
+            f"different module path, e.g. {env_var}=main for a flat main.py)"
+        ) from e
+    missing = [a for a in required_attrs if not hasattr(mod, a)]
+    if missing:
+        raise TargetNotFound(f"'{module_name}' is missing required attribute(s): {', '.join(missing)}")
 
 
 def verify_target(cli_arg: str | None = None) -> Path:
-    """Like load_target(), but also actually imports EMBEDDER_MODULE and
-    GENERATOR_MODULE and checks every required attribute is present --
-    real verification of the real interface, not a proxy check against
-    expected file names. Raises TargetNotFound with a specific, actionable
-    message (which module failed to import, or which attribute is
-    missing) rather than letting a confusing ImportError/AttributeError
-    surface three calls later inside eval/pipeline.py."""
-    root = load_target(cli_arg)
+    """The one real entry point: finds the target root and confirms it's
+    actually usable by importing EMBEDDER_MODULE / GENERATOR_MODULE and
+    checking every required attribute is present on each -- real
+    verification of the real interface, not a proxy check against
+    expected file names. Call this once, early (eval/runner.py does, before
+    downloading the dataset) -- every other module in this suite that
+    needs the target assumes this already ran and just imports directly.
+    """
+    global _injected, _resolved_root
+    if _injected:
+        return _resolved_root
 
-    def _check(module_name: str, required_attrs: tuple[str, ...], env_var: str) -> None:
+    errors: list[str] = []
+    for label, root in _candidate_roots(cli_arg):
+        if not root.is_dir():
+            errors.append(f"  [{label}] '{root}' is not a directory")
+            continue
+
+        modules_before = set(sys.modules)
+        sys.path.insert(0, str(root))
         try:
-            mod = importlib.import_module(module_name)
-        except ImportError as e:
-            raise TargetNotFound(
-                f"Could not import '{module_name}' from '{root}': {e}\n"
-                f"If your project doesn't use this module path, set {env_var} to the right one "
-                f"(e.g. {env_var}=main for a flat main.py). See TARGET_INTERFACE.md."
-            ) from e
-        missing = [a for a in required_attrs if not hasattr(mod, a)]
-        if missing:
-            raise TargetNotFound(
-                f"'{module_name}' (from '{root}') is missing required attribute(s): "
-                f"{', '.join(missing)}. See TARGET_INTERFACE.md for the full interface."
-            )
+            _check_module(EMBEDDER_MODULE, _REQUIRED_EMBEDDER_ATTRS, "EVAL_EMBEDDER_MODULE")
+            _check_module(GENERATOR_MODULE, _REQUIRED_GENERATOR_ATTRS, "EVAL_GENERATOR_MODULE")
+        except TargetNotFound as e:
+            sys.path.remove(str(root))
+            # Undo any partial imports this failed attempt cached, so a
+            # same-named module under the next candidate root isn't
+            # shadowed by a stale entry left behind by this one.
+            for name in set(sys.modules) - modules_before:
+                del sys.modules[name]
+            errors.append(f"  [{label}] '{root}': {e}")
+            continue
 
-    _check(EMBEDDER_MODULE, _REQUIRED_EMBEDDER_ATTRS, "EVAL_EMBEDDER_MODULE")
-    _check(GENERATOR_MODULE, _REQUIRED_GENERATOR_ATTRS, "EVAL_GENERATOR_MODULE")
-    return root
+        _injected = True
+        _resolved_root = root
+        return root
+
+    raise TargetNotFound(
+        "Could not find a compatible RAG project. Tried:\n"
+        + "\n".join(errors)
+        + "\n\nSee TARGET_INTERFACE.md for the required interface. Point at your project "
+        "explicitly with --rag-root <path>, or set the RAG_PROJECT_ROOT environment variable, e.g.:\n"
+        '  $env:RAG_PROJECT_ROOT = "C:\\path\\to\\your-project"   # PowerShell\n'
+        "  export RAG_PROJECT_ROOT=/path/to/your-project          # bash"
+    )
+
+
+def load_target(cli_arg: str | None = None) -> Path:
+    """Resolves and verifies the target if that hasn't happened yet in
+    this process, otherwise returns the already-resolved root. Safe to
+    call from anywhere (eval/judge.py, eval/index_build.py, etc.) without
+    re-running verification every time."""
+    return verify_target(cli_arg)
 
 
 def get_embedder():
