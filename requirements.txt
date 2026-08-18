@@ -16,5 +16,11 @@ sentence-transformers==3.3.1
 numpy==1.26.4
 pyarrow>=14.0.0
 huggingface_hub==0.36.2
-openai==3.1.0
 python-dotenv==1.2.2
+
+# Judge provider -- eval/judge.py auto-detects whichever of these is
+# actually configured (OPENAI_API_KEY vs ANTHROPIC_API_KEY / `ant auth
+# login`). You only need the one matching your key; install both if you
+# want to be able to switch via EVAL_JUDGE_PROVIDER.
+openai==3.1.0
+anthropic>=0.122.0

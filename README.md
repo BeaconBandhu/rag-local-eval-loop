@@ -158,10 +158,38 @@ Phase A's parallelism depends on the target's `GENERATION_BACKEND`
 ## Setup
 
 This suite needs the target RAG project's exact runtime (it imports and
-executes that project's `app.*` and `training.*` modules in-process —
-same embedding model, same FAISS version, same generation backend, same
-`OPENAI_API_KEY` via that project's own `.env`). **Run it with the target
-project's own virtualenv Python** rather than creating a new one:
+executes that project's `app.*` and `training.*` modules in-process — same
+embedding model, same FAISS version, same generation backend). **Run it
+with the target project's own virtualenv Python** rather than creating a
+new one.
+
+### One-command launcher (recommended)
+
+`run.ps1` (Windows) / `run.sh` (macOS/Linux) find that venv for you and
+forward every argument to `eval.runner`:
+
+```powershell
+.\run.ps1                                              # sibling ..\RAG, sensible defaults
+.\run.ps1 --num-answerable 50 --num-unanswerable 50
+.\run.ps1 --rag-root D:\path\to\RAG
+```
+
+```bash
+./run.sh
+./run.sh --num-answerable 50 --num-unanswerable 50
+./run.sh --rag-root /path/to/RAG
+```
+
+Both resolve the target project root the same way `eval/target.py` does:
+`--rag-root` flag → `RAG_PROJECT_ROOT` env var → a sibling `../RAG`
+directory next to wherever this repo was cloned. If none of those resolve
+to a real checkout (missing `app/config.py`) or that project has no
+`.venv`, the script says exactly what's missing instead of failing deep
+inside a Python traceback.
+
+### Manual invocation
+
+Equivalent to what the launcher does, if you'd rather run it yourself:
 
 ```bash
 # from this repo's root
@@ -169,10 +197,34 @@ RAG_PROJECT_ROOT=/path/to/RAG  /path/to/RAG/.venv/bin/python -m eval.runner     
 $env:RAG_PROJECT_ROOT="D:\path\to\RAG"; D:\path\to\RAG\.venv\Scripts\python.exe -m eval.runner   # PowerShell
 ```
 
-If this repo and the target project are cloned as sibling directories
-(`.../RAG` next to `.../rag-local-eval-loop`), `RAG_PROJECT_ROOT` isn't
-even required — `eval/target.py` defaults to that sibling path. Override
-with `--rag-root <path>` any time.
+### Judge credentials
+
+The judge (`eval/judge.py`) auto-detects whichever real credential is
+actually present — it doesn't assume OpenAI. Whatever the target
+project's own generation backend needs (`OPENAI_API_KEY` for its
+`"openai"` backend, nothing for `"local"`) is separate from what the
+*judge* needs, and the judge always needs one of its own regardless of
+which generation backend is under test:
+
+| Env var | Effect |
+|---|---|
+| `OPENAI_API_KEY` | judge uses OpenAI (`EVAL_JUDGE_MODEL_OPENAI`, default `gpt-5.4-mini`) |
+| `ANTHROPIC_API_KEY` (or an `ant auth login` profile) | judge uses Anthropic (`EVAL_JUDGE_MODEL_ANTHROPIC`, default `claude-opus-5`) if no OpenAI key is set |
+| `EVAL_JUDGE_PROVIDER=openai\|anthropic\|auto` | force a provider instead of auto-detecting (default `auto`) |
+
+No live Anthropic key was available while building this suite — the
+OpenAI path has been run end-to-end repeatedly (see below); the Anthropic
+path is written directly from Anthropic's current API docs (verified
+`output_config` JSON-schema shape, verified exception classes — including
+a real, non-obvious one: the Anthropic SDK raises a bare `TypeError`, not
+`AuthenticationError`, when literally no credential resolves at all, which
+this suite catches explicitly) and its "no credentials configured" failure
+path has been tested for real, but a genuine judge *call* with a live
+Anthropic key has not. If you're the first to run it that way and
+something's off, that's the part to check first.
+
+Retrieval, reliability, and latency checks need neither key — only
+`faithfulness` and `correctness` call the judge.
 
 ### CLI options
 
