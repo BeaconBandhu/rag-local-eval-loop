@@ -226,6 +226,41 @@ starts, and fails with the exact missing module or function name if
 something's wrong, before this
 suite wastes any time downloading the dataset.
 
+### Option C: the target isn't a Python module at all
+
+Options A and B both assume you can `import` the target's embedder and
+generator — fine for a Python project, not for a Node/TS service, a Go
+binary, or anything else only reachable over its own HTTP API.
+`eval/http_target.py` is a generic, config-driven adapter that satisfies
+the exact same interface ([TARGET_INTERFACE.md](TARGET_INTERFACE.md)) by
+calling a real running service instead of importing real code — same
+downstream checks, same report, no changes anywhere else in this suite:
+
+```powershell
+$env:EVAL_EMBEDDER_MODULE = "eval.http_target"
+$env:EVAL_GENERATOR_MODULE = "eval.http_target"
+$env:EVAL_HTTP_CONFIG = "C:\path\to\your_target_config.json"
+python -m eval.runner --num-answerable 3 --num-unanswerable 3 --workers 1 --rag-root C:\path\to\the\cloned\target-repo
+```
+
+```bash
+export EVAL_EMBEDDER_MODULE=eval.http_target
+export EVAL_GENERATOR_MODULE=eval.http_target
+export EVAL_HTTP_CONFIG=/path/to/your_target_config.json
+python -m eval.runner --num-answerable 3 --num-unanswerable 3 --workers 1 --rag-root /path/to/the/cloned/target-repo
+```
+
+(`--rag-root` here is only so the report records which project was under
+test — this adapter itself doesn't read anything from that directory.)
+
+See `eval/http_target.py`'s own docstring for the full config schema and
+the three retrieval-check modes (`reembed`, `skip`, and why "read
+ground-truth straight from the target's own API" is deliberately out of
+scope for now). [`examples/http_target_configs/goarag.json`](examples/http_target_configs/goarag.json)
+is a real config written against an actual Task #2 submission — a
+Node/TS project with no Python at all, its embedder unreachable except by
+reloading the public model it names in its own docs.
+
 ### Manual invocation
 
 Equivalent to what the launcher does, if you'd rather run it yourself:

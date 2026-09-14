@@ -24,6 +24,11 @@ pyarrow>=14.0.0
 huggingface_hub>=0.36.2
 python-dotenv>=1.2.2
 
+# eval/http_target.py -- the generic adapter for targets that are an HTTP
+# service rather than an importable Python module (e.g. a Node/TS RAG
+# project). Only needed if EVAL_GENERATOR_MODULE=eval.http_target.
+requests>=2.31.0
+
 # Judge provider -- eval/judge.py auto-detects whichever of these is
 # actually configured (OPENAI_API_KEY vs ANTHROPIC_API_KEY / `ant auth
 # login`). You only need the one matching your key; install both if you
